@@ -1,5 +1,10 @@
 import os
 
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
+import gc
+
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
@@ -8,11 +13,14 @@ from PIL import Image
 from flask import Flask, request, jsonify
 
 
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
+
 app = Flask(__name__)
 
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cpu")
 
 MODEL_PATH = os.environ.get(
     "MODEL_PATH",
@@ -44,9 +52,13 @@ def build_model():
         nn.Linear(256, 1)
     )
 
-    state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
-    model.load_state_dict(state_dict)
+    state_dict = torch.load(
+        MODEL_PATH,
+        map_location=DEVICE,
+        weights_only=True
+    )
 
+    model.load_state_dict(state_dict)
     model.to(DEVICE)
     model.eval()
 
@@ -100,10 +112,15 @@ def predict():
         image = Image.open(image_file.stream).convert("RGB")
         image_tensor = transform(image).unsqueeze(0).to(DEVICE)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             prediction = model(image_tensor)
 
         value = float(prediction.item())
+
+        del image
+        del image_tensor
+        del prediction
+        gc.collect()
 
         return jsonify({
             "success": True,
@@ -111,6 +128,7 @@ def predict():
         })
 
     except Exception as e:
+        gc.collect()
         return jsonify({
             "success": False,
             "error": str(e)
